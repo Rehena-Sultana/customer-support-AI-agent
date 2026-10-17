@@ -1,0 +1,14 @@
+streamlit>=1.40.0
+langgraph>=0.2.50
+langchain-core>=0.3.20
+transformers>=4.45.0
+peft>=0.13.0
+accelerate>=1.0.0
+bitsandbytes>=0.44.0
+torch>=2.4.0
+pandas>=2.2.0
+scikit-learn>=1.5.0
+pypdf>=5.0.0
+python-dotenv>=1.0.1
+# Optional audio transcription support: install separately if needed
+# faster-whisper>=1.0.0
