@@ -16,7 +16,7 @@ def _connect():
 def init_db():
     with _connect() as conn:
         conn.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
+        CREATE TABLE IF NOT EXISTS users ( 
             customer_id TEXT PRIMARY KEY,
             display_name TEXT NOT NULL,
             email TEXT NOT NULL,
@@ -40,6 +40,16 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'pending_human',
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS interactions (
+            interaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id TEXT,
+            route TEXT NOT NULL,
+            user_message TEXT NOT NULL,
+            response TEXT NOT NULL,
+            summary TEXT,
+            escalation_id INTEGER,
+            created_at TEXT NOT NULL
+        );
         """)
         conn.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?)",
                      ("CUST-1001", "Alex Morgan", "alex@example.com", "2468"))
@@ -50,6 +60,15 @@ def init_db():
                         (SELECT 1 FROM tickets WHERE customer_id=? AND subject=?)""",
                      ("CUST-1001", "Unable to sign in", "Login page shows an error.", "in_progress",
                       _now(), "CUST-1001", "Unable to sign in"))
+        # Ensure any historical escalations are also indexed in interactions
+        conn.execute("""
+            INSERT INTO interactions (customer_id, route, user_message, response, summary, escalation_id, created_at)
+            SELECT customer_id, 'escalation', reason, 'Forwarded to human support.', summary, escalation_id, created_at
+            FROM escalations e
+            WHERE NOT EXISTS (
+                SELECT 1 FROM interactions i WHERE i.escalation_id = e.escalation_id
+            )
+        """)
 
 
 def _now():
@@ -95,3 +114,71 @@ def create_escalation(customer_id: str | None, reason: str, summary: str, conver
             (customer_id, reason[:300], summary[:2000], conversation[:12000], _now()),
         )
         return int(cur.lastrowid)
+
+
+def list_escalations(status: str | None = None, limit: int = 50) -> list[dict]:
+    with _connect() as conn:
+        if status:
+            rows = conn.execute(
+                "SELECT escalation_id, customer_id, reason, summary, conversation, status, created_at FROM escalations WHERE status=? ORDER BY escalation_id DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT escalation_id, customer_id, reason, summary, conversation, status, created_at FROM escalations ORDER BY escalation_id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def update_escalation_status(escalation_id: int, status: str) -> bool:
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE escalations SET status=? WHERE escalation_id=?",
+            (status, escalation_id),
+        )
+        return cur.rowcount > 0
+
+
+def list_all_tickets(limit: int = 50) -> list[dict]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT ticket_id, customer_id, subject, description, status, created_at FROM tickets ORDER BY ticket_id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def log_interaction(
+    customer_id: str | None,
+    route: str,
+    user_message: str,
+    response: str,
+    summary: str = "",
+    escalation_id: int | None = None,
+) -> int:
+    with _connect() as conn:
+        cur = conn.execute(
+            """INSERT INTO interactions (customer_id, route, user_message, response, summary, escalation_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (customer_id, route, user_message[:2000], response[:4000], summary[:4000], escalation_id, _now()),
+        )
+        return int(cur.lastrowid)
+
+
+def list_interactions(route: str | None = None, limit: int = 100) -> list[dict]:
+    with _connect() as conn:
+        if route and route.lower() != "all":
+            rows = conn.execute(
+                """SELECT interaction_id, customer_id, route, user_message, response, summary, escalation_id, created_at
+                   FROM interactions WHERE route=? ORDER BY interaction_id DESC LIMIT ?""",
+                (route, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT interaction_id, customer_id, route, user_message, response, summary, escalation_id, created_at
+                   FROM interactions ORDER BY interaction_id DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+    return [dict(r) for r in rows]
+

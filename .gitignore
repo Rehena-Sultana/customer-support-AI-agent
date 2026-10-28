@@ -63,6 +63,7 @@ myenv/
 *.sqlite
 *.sqlite3
 data/support.db
+data/chroma_db/
 
 # Streamlit
 .streamlit/secrets.toml
@@ -76,6 +77,7 @@ data/support.db
 *.onnx
 *.ckpt
 qwen-support-adapter/
+qwen25_support_adapter/
 customer_support_qwen25_15b_lora/
 models/
 checkpoints/

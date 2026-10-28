@@ -4,39 +4,50 @@ This is a beginner-friendly starter project that loads an existing **Qwen2.5-1.5
 
 ## What is included
 
-- **Coordinator:** routes requests to knowledge, ticket creation/tracking, account lookup, or human escalation.
-- **Knowledge Agent (RAG):** searches local `.md`, `.txt`, and `.pdf` files with TF-IDF retrieval and passes retrieved passages to Qwen.
-- **Ticket Agent:** creates tickets and checks status in SQLite. Ticket access is scoped to the signed-in customer.
-- **User Agent:** displays demo account information only after the customer ID/PIN check succeeds.
-- **Audio Processor:** optional speech-to-text via `faster-whisper`; the transcript follows the same workflow as typed text.
-- **Human escalation:** stores a handoff summary and recent conversation in SQLite. No real notification is sent in this demo.
-- **Streamlit UI:** chat, sign-in, audio upload, ticket list, and workflow details.
+- **Coordinator:** routes requests to knowledge, ticket creation/tracking, account lookup, or human escalation using deterministic intent rules in `src/routing.py`.
+- **Knowledge Agent (ChromaDB Vector RAG):** indexes local `.md`, `.txt`, and `.pdf` files into a persistent **ChromaDB** vector store (`data/chroma_db/`) using `BAAI/bge-small-en-v1.5` embeddings and cosine similarity (with lexical verification and automatic TF-IDF fallback), passing retrieved passages to Qwen.
+- **Ticket Agent:** creates tickets (with duplicate prevention) and checks status in SQLite (`data/support.db`). Ticket access is strictly scoped to the signed-in customer.
+- **User Agent:** displays verified account information only after the customer ID/PIN check succeeds.
+- **Audio Processor (Dual Voice Input):** speech-to-text via cached `faster-whisper` (`int8` quantized `base` model with VAD filtering). Supports **both**:
+  1. **🔴 Direct Browser Microphone Recording:** tap-to-record directly in the browser (`st.audio_input`) with manual send or automatic send upon finishing recording.
+  2. **📁 Audio File Upload:** upload existing audio files (`WAV`, `MP3`, `M4A`, `OGG`, `FLAC`, `WEBM`) or test immediately with the 3 built-in downloadable sample `.wav` recordings.
+- **Human Escalation & Admin Portal:** generates structured, issue-specific handoff briefings (`src/handoff.py`) with category, urgency, extracted entities (orders, tickets, dollar amounts, error codes), and recommended actions, stored in SQLite and manageable from the sidebar Admin Dashboard.
+- **Streamlit UI:** live chat, customer sign-in, dual-tabbed voice & audio input, ticket list, and interactive admin escalation portal.
 
 ## Important note about the Coordinator
 
-Routing uses explicit rules in `src/graph.py` for predictable behavior. The fine-tuned Qwen adapter is used to write customer-facing answers using retrieved knowledge and verified tool results. This is intentional: a general customer-support adapter trained on conversation data is not automatically a reliable structured intent classifier. Later, you can fine-tune or evaluate a separate intent classifier if needed.
+Routing uses explicit rules in `src/routing.py` (orchestrated by `src/graph.py`) for predictable behavior. The fine-tuned Qwen adapter is used to write customer-facing answers using retrieved knowledge and verified tool results. This is intentional: a general customer-support adapter trained on conversation data is not automatically a reliable structured intent classifier. Later, you can fine-tune or evaluate a separate intent classifier if needed.
 
 ## 1. Project structure
 
 ```text
-customer_support_multi_agent/
-├── app.py
+customer-support-AI-agent/
+├── app.py                         # Streamlit live chat, dual voice input & admin portal
 ├── requirements.txt
 ├── .env.example
 ├── README.md
+├── qwen25_support_adapter/        # Fine-tuned Qwen 2.5-1.5B LoRA adapter & tokenizer
 ├── data/
+│   ├── chroma_db/                 # Persistent ChromaDB vector store (auto-created/synced)
 │   ├── knowledge/
 │   │   ├── company_faq.md
 │   │   └── company_policies.md
-│   └── support.db                 # created automatically at first run
-└── src/
-    ├── __init__.py
-    ├── config.py
-    ├── model.py                   # loads base model + your LoRA adapter
-    ├── database.py                # demo users, tickets, escalations
-    ├── knowledge.py               # local document retrieval (RAG)
-    ├── audio.py                   # optional audio transcription
-    └── graph.py                   # LangGraph coordinator and agents
+│   ├── sample_password_reset.wav  # Sample 1: Password FAQ audio
+│   ├── sample_human_agent.wav     # Sample 2: Live Agent escalation audio
+│   ├── sample_report_issue.wav    # Sample 3: Bug report / ticket audio
+│   └── support.db                 # SQLite database (created automatically at first run)
+├── src/
+│   ├── __init__.py
+│   ├── config.py                  # Environment & model/database paths
+│   ├── model.py                   # Loads base Qwen model + PEFT/LoRA adapter
+│   ├── database.py                # SQLite users, tickets, escalations, interactions
+│   ├── knowledge.py               # ChromaDB semantic search + TF-IDF fallback (RAG)
+│   ├── audio.py                   # Cached faster-whisper speech-to-text transcription
+│   ├── routing.py                 # Rule-based intent routing & safety guardrails
+│   ├── handoff.py                 # Structured human handoff briefing generation
+│   └── graph.py                   # LangGraph workflow, coordinator, and agent nodes
+└── tests/
+    └── test_agents.py             # Automated unit & end-to-end test suite (31 tests)
 ```
 
 ## 2. Before running: locate your adapter
@@ -56,8 +67,8 @@ If running on your Windows computer, download/copy that entire adapter folder an
 Open a terminal in this project directory, then run:
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
+py -m venv myenv
+.\myenv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 Copy-Item .env.example .env
@@ -92,27 +103,38 @@ These are demonstration credentials, not secure production authentication. The d
 
 ## 6. Test the agents
 
-1. Ask: `How do I reset my password?` → Knowledge Agent searches the FAQ/policy files.
-2. Sign in, then ask: `I cannot log in and get an error message` → Ticket Agent creates a ticket.
+1. Ask: `How do I reset my password?` → Knowledge Agent retrieves the answer from ChromaDB (`data/chroma_db/`).
+2. Sign in, then ask: `I cannot log in and get an error message` → Ticket Agent creates a ticket in `data/support.db`.
 3. Ask: `Show my ticket status` → Ticket Agent lists your tickets.
 4. Ask: `Track ticket #1 status` → Ticket Agent checks that ticket only if it belongs to your signed-in account.
 5. Ask: `What email is on my account?` → User Agent returns profile information only after sign-in.
-6. Ask: `I want to talk to a human` → Human escalation record is created with context.
-7. Upload an audio file and click **Process uploaded audio** → Audio Processor transcribes it, then the Coordinator routes the transcript.
+6. Ask: `I want to talk to a human` → Escalation Agent creates a structured handoff record visible in the sidebar **Admin Portal -> Open Admin Dashboard**.
+7. Expand **🎙️ Voice & Audio Input** and test either tab:
+   - **🔴 Record with Browser Microphone:** Click the red microphone button to record directly in your browser, then click **🚀 Send Voice Message** (or enable **Auto-send when recording finishes**).
+   - **📁 Upload Audio File:** Upload any `WAV`, `MP3`, `M4A`, `OGG`, `FLAC`, or `WEBM` file (or download one of the 3 built-in sample `.wav` files) and click **🚀 Process Uploaded Audio**.
 
-## 7. Optional audio installation
+To run the automated unit and integration test suite:
 
-Audio is optional. To enable transcription:
+```powershell
+python -m unittest tests/test_agents.py -v
+```
+
+## 7. Voice & Audio Transcription (`faster-whisper`)
+
+Audio input is powered by `faster-whisper` (included in `requirements.txt`):
 
 ```powershell
 pip install faster-whisper
 ```
 
-The first transcription may download the Whisper model. CPU transcription can be slow. If `faster-whisper` is not installed, text chat continues to work.
+`src/audio.py` caches the `int8` Whisper model in memory (`@lru_cache`) with Voice Activity Detection (`vad_filter=True`) for fast (~1 second) transcription. Both recorded microphone audio and uploaded audio files are preserved with an inline audio player inside the chat history alongside their transcript.
 
-## 8. Add your company PDFs
+## 8. Knowledge Base & ChromaDB Vector Search
 
-Copy company `.pdf`, `.txt`, or `.md` files into `data/knowledge/`. Restart the app after adding documents because the in-process TF-IDF index is cached. The included RAG implementation is intentionally small and local; for larger document collections, replace it with a vector database and embedding model.
+Copy company `.pdf`, `.txt`, or `.md` files into `data/knowledge/`.
+- `src/knowledge.py` splits documents into chunks using `RecursiveCharacterTextSplitter` and stores `BAAI/bge-small-en-v1.5` vector embeddings in `data/chroma_db/` (`hnsw:space = cosine`).
+- Document changes are detected automatically via MD5 content hashing—whenever you add or edit files in `data/knowledge/`, ChromaDB automatically re-syncs the collection on the next query.
+- If ChromaDB is unavailable, retrieval automatically falls back to `scikit-learn` TF-IDF cosine similarity.
 
 ## 9. How the workflow works
 
